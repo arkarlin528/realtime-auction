@@ -65,7 +65,7 @@ jobs:
     needs: [backend, frontend]
     steps:
       - uses: actions/checkout@v4
-      - run: docker compose build
+      - run: cp .env.example .env && docker compose build
 
   secrets:
     name: Secret scan
