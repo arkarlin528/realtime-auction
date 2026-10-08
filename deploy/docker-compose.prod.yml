@@ -1,0 +1,82 @@
+# Production stack on the EC2 host (can share the instance with the logistics platform):
+# pre-built images from GHCR, 2 API replicas behind nginx, Redis backplane, Caddy for HTTPS.
+# Copy this file, the Caddyfile and a filled-in .env to ~/bidding on the server.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bidding
+      POSTGRES_USER: bidding
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidding -d bidding"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  migrate:
+    image: &api-image ghcr.io/${GHCR_OWNER:?}/bidding-api:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: &api-env
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: "Host=db;Database=bidding;Username=bidding;Password=${POSTGRES_PASSWORD}"
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?}
+      Seed__DemoPassword: ${DEMO_PASSWORD:?}
+      Redis__ConnectionString: "redis:6379"
+      Database__MigrateOnStartup: "false"
+      Database__MigrateOnly: "true"
+    restart: "no"
+
+  api:
+    image: *api-image
+    deploy:
+      replicas: 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      Database__MigrateOnly: "false"
+      DemoActivity__Enabled: "true"
+    restart: unless-stopped
+
+  web:
+    image: ghcr.io/${GHCR_OWNER:?}/bidding-web:latest
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN, e.g. auction.example.com}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  caddy_data:

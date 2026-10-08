@@ -1,0 +1,15 @@
+# Default rules, plus an allowlist for values that are public on purpose:
+# local-dev settings, the throwaway CI database, test fixtures and the demo password.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Intentionally public dev/demo/test values"
+paths = [
+  '''src/Bidding\.Api/appsettings\.Development\.json''',
+  '''\.github/workflows/ci\.yml''',
+  '''\.env\.example''',
+  '''tests/.*''',
+  '''web/src/pages/LoginPage\.tsx''',
+]

@@ -1,0 +1,73 @@
+# cp .env.example .env  &&  docker compose up --build
+# App: http://localhost:8081 · API docs: http://localhost:8081/docs
+#
+# Two API replicas share SignalR groups through Redis, to show the app scales out:
+# a bid handled by one instance reaches watchers connected to the other.
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: bidding
+      POSTGRES_USER: bidding
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bidding -d bidding"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Runs migrations + seed once, then exits. The replicas start after it succeeds.
+  migrate:
+    build: &api-build
+      context: .
+      dockerfile: src/Bidding.Api/Dockerfile
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: &api-env
+      ASPNETCORE_ENVIRONMENT: Production
+      ConnectionStrings__Default: "Host=db;Database=bidding;Username=bidding;Password=${POSTGRES_PASSWORD}"
+      Jwt__SigningKey: ${JWT_SIGNING_KEY:?Set JWT_SIGNING_KEY in .env}
+      Seed__DemoPassword: ${DEMO_PASSWORD:?Set DEMO_PASSWORD in .env}
+      Redis__ConnectionString: "redis:6379"
+      Database__MigrateOnStartup: "false"
+      Database__MigrateOnly: "true"
+    restart: "no"
+
+  api:
+    build: *api-build
+    deploy:
+      replicas: 2
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis:
+        condition: service_healthy
+    environment:
+      <<: *api-env
+      Database__MigrateOnly: "false"
+      DemoActivity__Enabled: "true"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: web
+    depends_on:
+      - api
+    ports:
+      - "${WEB_PORT:-8081}:80"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

@@ -1,0 +1,57 @@
+name: Deploy
+
+# Builds images, pushes them to GitHub Container Registry and restarts the stack on the EC2 host.
+# Runs manually, or after CI succeeds on main once the repository secrets below are set:
+#   DEPLOY_HOST, DEPLOY_USER, DEPLOY_SSH_KEY  (the EC2 instance; see deploy/README.md)
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [CI]
+    branches: [main]
+    types: [completed]
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # Off until the server exists: set the repository variable DEPLOY_ENABLED=true (Settings → Variables).
+    if: ${{ vars.DEPLOY_ENABLED == 'true' && (github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success') }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      REGISTRY: ghcr.io/${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push images
+        run: |
+          OWNER=$(echo "$REGISTRY" | tr '[:upper:]' '[:lower:]')
+          docker build -f src/Bidding.Api/Dockerfile -t $OWNER/bidding-api:${{ github.sha }} -t $OWNER/bidding-api:latest .
+          docker build -t $OWNER/bidding-web:${{ github.sha }} -t $OWNER/bidding-web:latest web
+          docker push --all-tags $OWNER/bidding-api
+          docker push --all-tags $OWNER/bidding-web
+
+      - name: Roll out on the server
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd ~/bidding
+            docker compose -f docker-compose.prod.yml pull
+            docker compose -f docker-compose.prod.yml up -d
+            docker image prune -f
